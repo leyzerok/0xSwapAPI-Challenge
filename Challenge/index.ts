@@ -1,3 +1,7 @@
+// Hello Scroll!
+// leyzerok.eth
+// Scroll Level Up Challenge
+
 import { config as dotenv } from "dotenv";
 import {
   createWalletClient,
@@ -67,11 +71,8 @@ const wsteth = getContract({
 });
 
 const main = async () => {
-  // specify sell amount
   const decimals = (await weth.read.decimals()) as number;
   const sellAmount = parseUnits("0.1", decimals);
-
-  // 1. fetch price
   const priceParams = new URLSearchParams({
     chainId: client.chain.id.toString(),
     sellToken: weth.address,
@@ -79,44 +80,13 @@ const main = async () => {
     sellAmount: sellAmount.toString(),
     taker: client.account.address,
   });
-
   const priceResponse = await fetch(
     "https://api.0x.org/swap/permit2/price?" + priceParams.toString(),
     {
-      headers,
+      headers: headers,
     }
   );
-
   const price = await priceResponse.json();
-  console.log("Fetching price to swap 0.1 WETH for wstETH");
-  console.log(
-    `https://api.0x.org/swap/permit2/price?${priceParams.toString()}`
-  );
-  console.log("priceResponse: ", price);
-
-  // 2. check if taker needs to set an allowance for Permit2
-
-  if (price.issues.allowance !== null) {
-    try {
-      const { request } = await weth.simulate.approve([
-        price.issues.allowance.spender,
-        maxUint256,
-      ]);
-      console.log("Approving Permit2 to spend WETH...", request);
-      // set approval
-      const hash = await weth.write.approve(request.args);
-      console.log(
-        "Approved Permit2 to spend WETH.",
-        await client.waitForTransactionReceipt({ hash })
-      );
-    } catch (error) {
-      console.log("Error approving Permit2:", error);
-    }
-  } else {
-    console.log("WETH already approved for Permit2");
-  }
-
-  // 3. fetch quote
   const quoteParams = new URLSearchParams();
   for (const [key, value] of priceParams.entries()) {
     quoteParams.append(key, value);
@@ -128,70 +98,64 @@ const main = async () => {
       headers,
     }
   );
-
   const quote = await quoteResponse.json();
-  console.log("Fetching quote to swap 1000 WETH for wstETH");
-  console.log("quoteResponse: ", quote);
 
-  // 4. sign permit2.eip712 returned from quote
-  let signature: Hex | undefined;
-  if (quote.permit2?.eip712) {
-    try {
-      signature = await client.signTypedData(quote.permit2.eip712);
-      console.log("Signed permit2 message from quote response");
-    } catch (error) {
-      console.error("Error signing permit2 coupon:", error);
+  const sourcesParams = new URLSearchParams({
+    chainId: client.chain.id.toString(),
+  });
+  const sourcesResponse = await fetch(
+    "https://api.0x.org/sources?" + sourcesParams.toString(),
+    {
+      headers,
     }
+  );
+  const sources = (await sourcesResponse.json()).sources;
 
-    // 5. append sig length and sig data to transaction.data
-
-    if (signature && quote?.transaction?.data) {
-      const signatureLengthInHex = numberToHex(size(signature), {
-        signed: false,
-        size: 32,
-      });
-
-      const transactionData = quote.transaction.data as Hex;
-      const sigLengthHex = signatureLengthInHex as Hex;
-      const sig = signature as Hex;
-
-      quote.transaction.data = concat([transactionData, sigLengthHex, sig]);
-    } else {
-      throw new Error("Failed to obtain signature or transaction data");
-    }
+  // 1
+  const fills = quote.route.fills;
+  console.log(`${fills.length} Sources`);
+  for (let i = 0; i < fills.length; i++) {
+    console.log(`${fills[i].source}: ${fills[i].proportionBps / 100}%`);
   }
-  // 6. submit txn with permit2 signature
-  if (signature && quote.transaction.data) {
-    const nonce = await client.getTransactionCount({
-      address: client.account.address,
-    });
 
-    const signedTransaction = await client.signTransaction({
-      account: client.account,
-      chain: client.chain,
-      gas: !!quote?.transaction.gas
-        ? BigInt(quote?.transaction.gas)
-        : undefined,
-      to: quote?.transaction.to,
-      data: quote.transaction.data,
-      value: quote?.transaction.value
-        ? BigInt(quote.transaction.value)
-        : undefined, // value is used for native tokens
-      gasPrice: !!quote?.transaction.gasPrice
-        ? BigInt(quote?.transaction.gasPrice)
-        : undefined,
-      nonce: nonce,
-    });
-    const hash = await client.sendRawTransaction({
-      serializedTransaction: signedTransaction,
-    });
+  // 2
+  const affiliateFeeParams = new URLSearchParams({
+    chainId: client.chain.id.toString(),
+    sellToken: weth.address,
+    buyToken: wsteth.address,
+    sellAmount: sellAmount.toString(),
+    taker: client.account.address,
+    swapFeeRecipient: client.account.address,
+    swapFeeBps: "100",
+    swapFeeToken: wsteth.address,
+  });
+  const affiliateFeeResponse = await fetch(
+    "https://api.0x.org/swap/permit2/quote?" + affiliateFeeParams.toString(),
+    {
+      headers,
+    }
+  );
+  const affiliateFee = await affiliateFeeResponse.json();
+  console.log("fee", affiliateFee.fees);
 
-    console.log("Transaction hash:", hash);
+  // 3
+  console.log(
+    `Buy token Buy tax:", ${price.tokenMetadata.buyToken.buyTaxBps / 1000}%`
+  );
+  console.log(
+    `Buy token Sell tax:", ${price.tokenMetadata.buyToken.sellTaxBps / 1000}%`
+  );
+  console.log(
+    `Sell token Buy tax:", ${price.tokenMetadata.sellToken.buyTaxBps / 1000}%`
+  );
+  console.log(
+    `Sell token Sell tax:", ${price.tokenMetadata.sellToken.sellTaxBps / 1000}%`
+  );
 
-    console.log(`See tx details at https://scrollscan.com/tx/${hash}`);
-  } else {
-    console.error("Failed to obtain a signature, transaction not sent.");
+  // 4
+  console.log("Liquidity sources for Scroll chain:");
+  for (let i = 0; i < sources.length; i++) {
+    console.log("\t", sources[i]);
   }
 };
-
 main();
